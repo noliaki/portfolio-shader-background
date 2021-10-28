@@ -9,14 +9,18 @@ import {
   ShaderMaterial,
   Texture,
 } from 'three'
-import { debounce } from './utils'
+import { Tween24, Ease24 } from 'tween24'
+import { debounce, fetchData, loadImage } from './utils'
 import { vertexShader } from './vertex-shader'
 import { fragmentShader } from './fragment-shader'
 
-const winWidth = window.innerWidth
-const winHeight = window.innerHeight
+interface ImageInfo {
+  url: string
+  width: number
+  height: number
+}
 
-const startTime = Date.now()
+const { innerWidth: winWidth, innerHeight: winHeight } = window
 
 const renderer = new WebGLRenderer()
 const scene = new Scene()
@@ -33,7 +37,7 @@ const mesh = new Mesh(
     fragmentShader,
     uniforms: {
       uTime: {
-        value: Date.now() - startTime,
+        value: 0,
       },
       uResolution: {
         value: [winWidth, winHeight],
@@ -74,8 +78,8 @@ const setCamera: (winWidth?: number, winHeight?: number) => void = (
   camera.bottom = -winHeight / 2
   camera.left = -winWidth / 2
 
-  camera.near = -10000
-  camera.far = 10000
+  camera.near = -1
+  camera.far = 1
 
   camera.updateProjectionMatrix()
 }
@@ -95,8 +99,105 @@ const update = () => {
     },
   } = mesh
 
-  uTime.value = Date.now() - startTime
+  uTime.value += 1
+
+  renderer.render(scene, camera)
+
+  requestAnimationFrame(() => {
+    update()
+  })
 }
+
+const imageInfos: ImageInfo[] = []
+
+const fetchImageData = async (): Promise<any> => {
+  const images = await fetchData(
+    `{
+      backgroundImageCollection {
+        items {
+          image {
+            url
+            width
+            height
+          }
+        }
+      }
+    }`
+  )
+
+  return images?.data?.backgroundImageCollection?.items ?? []
+}
+
+const init = async () => {
+  const images: { image: ImageInfo }[] = await fetchImageData()
+
+  for (let i = images.length - 1; i >= 0; i--) {
+    const r = Math.floor(Math.random() * (i + 1))
+    const temp = images[i]
+
+    images[i] = images[r]
+    images[r] = temp
+  }
+
+  imageInfos.push(...images.map(({ image }) => image))
+
+  setRenderer(winWidth, winHeight)
+  setCamera(winWidth, winHeight)
+  setMesh(winWidth, winHeight)
+
+  scene.add(mesh)
+
+  document.body.appendChild(renderer.domElement)
+
+  update()
+
+  nextImage(imageInfos[currentImageIndex])
+}
+
+const nextImage = async ({ url, width, height }: ImageInfo): Promise<void> => {
+  const nextImageEl = await loadImage(url)
+  const {
+    material: {
+      uniforms: {
+        uProgress,
+        uTexturePrev,
+        uTexturePrevResolution,
+        uTextureNext,
+        uTextureNextResolution,
+      },
+    },
+  } = mesh
+
+  const progress = {
+    value: 0,
+  }
+
+  uTextureNext.value.image = nextImageEl
+  uTextureNext.value.needsUpdate = true
+  uTextureNextResolution.value = [width, height]
+
+  Tween24.tween(progress, 2.5, Ease24._2_QuadInOut, { value: 1 })
+    .onUpdate(() => {
+      uProgress.value = progress.value
+    })
+    .onComplete(() => {
+      uProgress.value = 0
+      uTexturePrev.value.image = nextImageEl
+      uTexturePrev.value.needsUpdate = true
+      uTexturePrevResolution.value = [width, height]
+
+      setTimeout(() => {
+        const { length: imageLen } = imageInfos
+
+        currentImageIndex = (currentImageIndex + 1) % imageLen
+
+        nextImage(imageInfos[currentImageIndex])
+      }, 1000)
+    })
+    .play()
+}
+
+let currentImageIndex = 0
 
 window.addEventListener(
   'resize',
@@ -112,3 +213,5 @@ window.addEventListener(
     passive: true,
   }
 )
+
+init()
